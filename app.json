@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "Clothing COD Demo",
+    "slug": "clothing-cod-demo",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "plugins": [
+      "expo-web-browser"
+    ]
+  }
+}
