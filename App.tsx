@@ -18,13 +18,16 @@ import {
 } from "react-native-safe-area-context";
 
 type Screen =
-  | "auth"
   | "home"
   | "details"
   | "cart"
   | "checkout"
+  | "auth"
   | "orders"
+  | "profile"
   | "admin";
+
+type AuthMode = "login" | "signup";
 
 type Category =
   | "All"
@@ -61,8 +64,19 @@ type CartItem = {
   qty: number;
 };
 
+type OrderItem = {
+  id: string;
+  product_id: string;
+  product_name: string;
+  price: number;
+  quantity: number;
+  selected_size: string | null;
+  selected_color: string | null;
+};
+
 type Order = {
   id: string;
+  user_id: string;
   status: string;
   total: number;
   created_at: string;
@@ -71,20 +85,14 @@ type Order = {
   phone?: string;
   city?: string;
   address?: string;
-  order_items?: {
-    id: string;
-    product_name: string;
-    price: number;
-    quantity: number;
-    selected_size: string | null;
-    selected_color: string | null;
-  }[];
+  order_items?: OrderItem[];
 };
 
-type Profile = {
+type UserAccount = {
   id: string;
-  email: string | null;
-  full_name: string | null;
+  email: string;
+  password: string;
+  full_name: string;
   is_admin: boolean;
 };
 
@@ -99,20 +107,12 @@ const categories: Category[] = [
   "Jackets",
 ];
 
-/**
- * HARDCODED LOGIN ACCOUNTS
- * Change these to whatever you want.
- */
-const DEMO_ADMIN = {
+const DEMO_ADMIN: UserAccount = {
+  id: "admin-1",
   email: "admin@hypenest.com",
   password: "admin123",
   full_name: "HypeNest Admin",
-};
-
-const DEMO_USER = {
-  email: "user@hypenest.com",
-  password: "user123",
-  full_name: "HypeNest User",
+  is_admin: true,
 };
 
 const DEMO_PRODUCTS: Product[] = [
@@ -188,17 +188,32 @@ const DEMO_PRODUCTS: Product[] = [
     sizes: ["M", "L", "XL"],
     stock: 14,
   },
+  {
+    id: "p7",
+    name: "Urban Jacket",
+    description: "Clean modern jacket for daily street outfits.",
+    price: 89.99,
+    old_price: 119.99,
+    category: "Jackets",
+    image_url: "https://via.placeholder.com/600x700.png?text=Urban+Jacket",
+    colors: ["Black", "Brown"],
+    sizes: ["M", "L", "XL"],
+    stock: 8,
+  },
 ];
 
 function MainApp() {
   const insets = useSafeAreaInsets();
 
-  const [screen, setScreen] = useState<Screen>("auth");
+  const [screen, setScreen] = useState<Screen>("home");
   const [adminTab, setAdminTab] = useState<AdminTab>("dashboard");
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [redirectAfterAuth, setRedirectAfterAuth] = useState<Screen | null>(null);
 
-  const [sessionEmail, setSessionEmail] = useState<string | null>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [users, setUsers] = useState<UserAccount[]>([DEMO_ADMIN]);
 
+  const [authName, setAuthName] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
 
@@ -210,28 +225,17 @@ function MainApp() {
   const [selectedColor, setSelectedColor] = useState("");
 
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
 
   const [checkoutName, setCheckoutName] = useState("");
   const [checkoutPhone, setCheckoutPhone] = useState("");
   const [checkoutCity, setCheckoutCity] = useState("");
   const [checkoutAddress, setCheckoutAddress] = useState("");
 
-  const [myOrders, setMyOrders] = useState<Order[]>([]);
-  const [adminOrders, setAdminOrders] = useState<Order[]>([]);
-  const [adminUsers, setAdminUsers] = useState<Profile[]>([
-    {
-      id: "admin-1",
-      email: DEMO_ADMIN.email,
-      full_name: DEMO_ADMIN.full_name,
-      is_admin: true,
-    },
-    {
-      id: "user-1",
-      email: DEMO_USER.email,
-      full_name: DEMO_USER.full_name,
-      is_admin: false,
-    },
-  ]);
+  const [userSearch, setUserSearch] = useState("");
+  const [orderSearch, setOrderSearch] = useState("");
+  const [orderStatusFilter, setOrderStatusFilter] = useState("All");
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
 
   const [adminName, setAdminName] = useState("");
   const [adminDescription, setAdminDescription] = useState("");
@@ -243,19 +247,14 @@ function MainApp() {
   const [adminSizes, setAdminSizes] = useState("S,M,L,XL");
   const [adminStock, setAdminStock] = useState("10");
 
-  const [userSearch, setUserSearch] = useState("");
-  const [orderSearch, setOrderSearch] = useState("");
-  const [orderStatusFilter, setOrderStatusFilter] = useState("All");
-  const [editingProductId, setEditingProductId] = useState<string | null>(null);
-
   const filteredProducts = useMemo(() => {
     return products.filter((product) => {
       const matchesCategory =
         selectedCategory === "All" || product.category === selectedCategory;
 
-      const q = search.toLowerCase().trim();
+      const q = search.trim().toLowerCase();
       const matchesSearch =
-        q.length === 0 ||
+        !q ||
         product.name.toLowerCase().includes(q) ||
         product.category.toLowerCase().includes(q) ||
         (product.description ?? "").toLowerCase().includes(q);
@@ -264,22 +263,20 @@ function MainApp() {
     });
   }, [products, selectedCategory, search]);
 
-  const filteredAdminUsers = useMemo(() => {
-    const q = userSearch.trim().toLowerCase();
+  const cartTotal = useMemo(
+    () => cart.reduce((sum, item) => sum + item.price * item.qty, 0),
+    [cart]
+  );
 
-    return adminUsers.filter((user) => {
-      if (!q) return true;
-      return (
-        (user.full_name ?? "").toLowerCase().includes(q) ||
-        (user.email ?? "").toLowerCase().includes(q)
-      );
-    });
-  }, [adminUsers, userSearch]);
+  const myOrders = useMemo(() => {
+    if (!currentUser) return [];
+    return orders.filter((order) => order.user_id === currentUser.id);
+  }, [orders, currentUser]);
 
   const filteredAdminOrders = useMemo(() => {
     const q = orderSearch.trim().toLowerCase();
 
-    return adminOrders.filter((order) => {
+    return orders.filter((order) => {
       const matchesStatus =
         orderStatusFilter === "All" || order.status === orderStatusFilter;
 
@@ -292,7 +289,39 @@ function MainApp() {
 
       return matchesStatus && matchesSearch;
     });
-  }, [adminOrders, orderSearch, orderStatusFilter]);
+  }, [orders, orderSearch, orderStatusFilter]);
+
+  const filteredUsers = useMemo(() => {
+    const q = userSearch.trim().toLowerCase();
+
+    return users.filter((user) => {
+      if (!q) return true;
+      return (
+        user.full_name.toLowerCase().includes(q) ||
+        user.email.toLowerCase().includes(q)
+      );
+    });
+  }, [users, userSearch]);
+
+  const totalRevenue = useMemo(() => {
+    return orders.reduce((sum, order) => sum + Number(order.total), 0);
+  }, [orders]);
+
+  const pendingOrdersCount = useMemo(() => {
+    return orders.filter((order) => order.status === "Pending").length;
+  }, [orders]);
+
+  function resetAuthFields() {
+    setAuthName("");
+    setAuthEmail("");
+    setAuthPassword("");
+  }
+
+  function openAuth(target?: Screen) {
+    setRedirectAfterAuth(target ?? null);
+    setAuthMode("login");
+    setScreen("auth");
+  }
 
   function handleLogin() {
     const email = authEmail.trim().toLowerCase();
@@ -303,53 +332,94 @@ function MainApp() {
       return;
     }
 
-    if (
-      email === DEMO_ADMIN.email.toLowerCase() &&
-      password === DEMO_ADMIN.password
-    ) {
-      const adminProfile: Profile = {
-        id: "admin-1",
-        email: DEMO_ADMIN.email,
-        full_name: DEMO_ADMIN.full_name,
-        is_admin: true,
-      };
+    const foundUser = users.find(
+      (user) => user.email.toLowerCase() === email && user.password === password
+    );
 
-      setSessionEmail(DEMO_ADMIN.email);
-      setProfile(adminProfile);
+    if (!foundUser) {
+      Alert.alert("Login failed", "Wrong email or password.");
+      return;
+    }
+
+    setCurrentUser(foundUser);
+    setCheckoutName(foundUser.full_name);
+    resetAuthFields();
+
+    if (foundUser.is_admin && redirectAfterAuth === "admin") {
       setAdminTab("dashboard");
       setScreen("admin");
-      setCheckoutName(DEMO_ADMIN.full_name);
+      setRedirectAfterAuth(null);
       return;
     }
 
-    if (
-      email === DEMO_USER.email.toLowerCase() &&
-      password === DEMO_USER.password
-    ) {
-      const userProfile: Profile = {
-        id: "user-1",
-        email: DEMO_USER.email,
-        full_name: DEMO_USER.full_name,
-        is_admin: false,
-      };
-
-      setSessionEmail(DEMO_USER.email);
-      setProfile(userProfile);
-      setScreen("home");
-      setCheckoutName(DEMO_USER.full_name);
+    if (redirectAfterAuth) {
+      const target = redirectAfterAuth;
+      setRedirectAfterAuth(null);
+      setScreen(target);
       return;
     }
 
-    Alert.alert("Login failed", "Wrong email or password.");
+    if (foundUser.is_admin) {
+      setScreen("admin");
+    } else {
+      setScreen("profile");
+    }
+  }
+
+  function handleSignup() {
+    const name = authName.trim();
+    const email = authEmail.trim().toLowerCase();
+    const password = authPassword.trim();
+
+    if (!name || !email || !password) {
+      Alert.alert("Missing fields", "Fill name, email and password.");
+      return;
+    }
+
+    const emailExists = users.some(
+      (user) => user.email.toLowerCase() === email.toLowerCase()
+    );
+
+    if (emailExists) {
+      Alert.alert("Email exists", "This email is already registered.");
+      return;
+    }
+
+    const newUser: UserAccount = {
+      id: `user-${Date.now()}`,
+      full_name: name,
+      email,
+      password,
+      is_admin: false,
+    };
+
+    setUsers((prev) => [newUser, ...prev]);
+    setCurrentUser(newUser);
+    setCheckoutName(newUser.full_name);
+    resetAuthFields();
+
+    if (redirectAfterAuth) {
+      const target = redirectAfterAuth;
+      setRedirectAfterAuth(null);
+      setScreen(target);
+      return;
+    }
+
+    setScreen("profile");
   }
 
   function logout() {
-    setProfile(null);
-    setSessionEmail(null);
-    setCart([]);
-    setScreen("auth");
+    setCurrentUser(null);
+    setAuthMode("login");
+    setRedirectAfterAuth(null);
+    setAuthName("");
     setAuthEmail("");
     setAuthPassword("");
+    setCheckoutName("");
+    setCheckoutPhone("");
+    setCheckoutCity("");
+    setCheckoutAddress("");
+    setScreen("home");
   }
 
   function openDetails(product: Product) {
@@ -361,18 +431,23 @@ function MainApp() {
 
   function addToCart(product: Product) {
     if (!selectedSize || !selectedColor) {
-      Alert.alert("Select options", "Please choose a size and color.");
+      Alert.alert("Select options", "Please choose size and color.");
       return;
     }
 
-    const found = cart.find(
+    if (product.stock <= 0) {
+      Alert.alert("Out of stock", "This product is out of stock.");
+      return;
+    }
+
+    const existing = cart.find(
       (item) =>
         item.id === product.id &&
         item.selectedSize === selectedSize &&
         item.selectedColor === selectedColor
     );
 
-    if (found) {
+    if (existing) {
       setCart((prev) =>
         prev.map((item) =>
           item.id === product.id &&
@@ -391,7 +466,7 @@ function MainApp() {
       {
         id: product.id,
         name: product.name,
-        price: Number(product.price),
+        price: product.price,
         image_url: product.image_url,
         selectedSize,
         selectedColor,
@@ -416,13 +491,26 @@ function MainApp() {
     );
   }
 
-  const cartTotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
+  function goToCheckout() {
+    setScreen("checkout");
+  }
+
+  function handleCheckoutAuthGate() {
+    if (!currentUser) {
+      Alert.alert(
+        "Account required",
+        "Please create an account or log in with email to continue your order."
+      );
+      openAuth("checkout");
+      return true;
+    }
+    return false;
+  }
 
   function placeOrder() {
-    if (!profile || !sessionEmail) {
-      Alert.alert("Login required", "Please log in first.");
-      return;
-    }
+    if (handleCheckoutAuthGate()) return;
+
+    if (!currentUser) return;
 
     if (!checkoutName || !checkoutPhone || !checkoutCity || !checkoutAddress) {
       Alert.alert("Missing fields", "Fill all checkout fields.");
@@ -436,16 +524,18 @@ function MainApp() {
 
     const newOrder: Order = {
       id: `order-${Date.now()}`,
+      user_id: currentUser.id,
       status: "Pending",
       total: cartTotal,
       created_at: new Date().toISOString(),
       full_name: checkoutName,
-      email: sessionEmail,
+      email: currentUser.email,
       phone: checkoutPhone,
       city: checkoutCity,
       address: checkoutAddress,
       order_items: cart.map((item, index) => ({
         id: `item-${Date.now()}-${index}`,
+        product_id: item.id,
         product_name: item.name,
         price: item.price,
         quantity: item.qty,
@@ -454,12 +544,22 @@ function MainApp() {
       })),
     };
 
-    if (profile.is_admin) {
-      setAdminOrders((prev) => [newOrder, ...prev]);
-    } else {
-      setMyOrders((prev) => [newOrder, ...prev]);
-      setAdminOrders((prev) => [newOrder, ...prev]);
-    }
+    setOrders((prev) => [newOrder, ...prev]);
+
+    setProducts((prev) =>
+      prev.map((product) => {
+        const orderedQty = newOrder.order_items
+          ?.filter((item) => item.product_id === product.id)
+          .reduce((sum, item) => sum + item.quantity, 0);
+
+        if (!orderedQty) return product;
+
+        return {
+          ...product,
+          stock: Math.max(0, product.stock - orderedQty),
+        };
+      })
+    );
 
     Alert.alert("Success", "Order placed successfully.");
     setCart([]);
@@ -469,8 +569,69 @@ function MainApp() {
     setScreen("orders");
   }
 
+  function updateProfileName(newName: string) {
+    if (!currentUser) return;
+
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      Alert.alert("Invalid name", "Name cannot be empty.");
+      return;
+    }
+
+    setUsers((prev) =>
+      prev.map((user) =>
+        user.id === currentUser.id ? { ...user, full_name: trimmed } : user
+      )
+    );
+
+    setCurrentUser((prev) => (prev ? { ...prev, full_name: trimmed } : prev));
+    setCheckoutName(trimmed);
+    Alert.alert("Saved", "Profile updated.");
+  }
+
+  function updateOrderStatus(orderId: string, status: string) {
+    setOrders((prev) =>
+      prev.map((order) => (order.id === orderId ? { ...order, status } : order))
+    );
+  }
+
+  function setUserAdmin(userId: string, value: boolean) {
+    if (!currentUser?.is_admin) {
+      Alert.alert("Access denied", "Only admin can do this.");
+      return;
+    }
+
+    if (userId === currentUser.id && !value) {
+      Alert.alert("Not allowed", "You cannot remove admin from yourself.");
+      return;
+    }
+
+    setUsers((prev) =>
+      prev.map((user) => (user.id === userId ? { ...user, is_admin: value } : user))
+    );
+
+    if (currentUser.id === userId) {
+      setCurrentUser((prev) => (prev ? { ...prev, is_admin: value } : prev));
+    }
+
+    Alert.alert("Success", value ? "User is now admin." : "Admin removed.");
+  }
+
+  function resetAdminProductForm() {
+    setEditingProductId(null);
+    setAdminName("");
+    setAdminDescription("");
+    setAdminPrice("");
+    setAdminOldPrice("");
+    setAdminCategory("T-Shirts");
+    setAdminImageUrl("");
+    setAdminColors("Black,White");
+    setAdminSizes("S,M,L,XL");
+    setAdminStock("10");
+  }
+
   function addProductAsAdmin() {
-    if (!profile?.is_admin) {
+    if (!currentUser?.is_admin) {
       Alert.alert("Access denied", "Only admin can do this.");
       return;
     }
@@ -509,29 +670,6 @@ function MainApp() {
     Alert.alert("Deleted", "Product removed.");
   }
 
-  function updateOrderStatus(orderId: string, status: string) {
-    setAdminOrders((prev) =>
-      prev.map((order) => (order.id === orderId ? { ...order, status } : order))
-    );
-
-    setMyOrders((prev) =>
-      prev.map((order) => (order.id === orderId ? { ...order, status } : order))
-    );
-  }
-
-  function setUserAdmin(userId: string, value: boolean) {
-    if (!profile?.is_admin) {
-      Alert.alert("Access denied", "Only admin can do this.");
-      return;
-    }
-
-    setAdminUsers((prev) =>
-      prev.map((user) => (user.id === userId ? { ...user, is_admin: value } : user))
-    );
-
-    Alert.alert("Success", value ? "User is now admin." : "Admin removed.");
-  }
-
   function startEditProduct(product: Product) {
     setEditingProductId(product.id);
     setAdminName(product.name);
@@ -542,21 +680,8 @@ function MainApp() {
     setAdminImageUrl(product.image_url ?? "");
     setAdminColors((product.colors ?? []).join(","));
     setAdminSizes((product.sizes ?? []).join(","));
-    setAdminStock(String(product.stock ?? 0));
+    setAdminStock(String(product.stock));
     setAdminTab("products");
-  }
-
-  function resetAdminProductForm() {
-    setEditingProductId(null);
-    setAdminName("");
-    setAdminDescription("");
-    setAdminPrice("");
-    setAdminOldPrice("");
-    setAdminCategory("T-Shirts");
-    setAdminImageUrl("");
-    setAdminColors("Black,White");
-    setAdminSizes("S,M,L,XL");
-    setAdminStock("10");
   }
 
   function saveProductEditAsAdmin() {
@@ -591,25 +716,47 @@ function MainApp() {
     resetAdminProductForm();
   }
 
+  function goToAdmin() {
+    if (!currentUser) {
+      openAuth("admin");
+      return;
+    }
+
+    if (!currentUser.is_admin) {
+      Alert.alert("Access denied", "Only admin can open admin panel.");
+      return;
+    }
+
+    setScreen("admin");
+  }
+
   if (screen === "auth") {
     return (
       <SafeAreaView style={styles.safe}>
         <StatusBar barStyle="dark-content" />
         <ScrollView contentContainerStyle={styles.authWrap}>
           <Text style={styles.logo}>HypeNest</Text>
-          <Text style={styles.subtle}>Login with hardcoded demo accounts</Text>
+          <Text style={styles.subtle}>
+            {authMode === "login"
+              ? "Login to continue your shopping"
+              : "Create your HypeNest account"}
+          </Text>
 
           <View style={styles.demoBox}>
-            <Text style={styles.demoTitle}>Admin login</Text>
+            <Text style={styles.demoTitle}>Admin demo</Text>
             <Text style={styles.demoText}>Email: {DEMO_ADMIN.email}</Text>
             <Text style={styles.demoText}>Password: {DEMO_ADMIN.password}</Text>
           </View>
 
-          <View style={styles.demoBox}>
-            <Text style={styles.demoTitle}>User login</Text>
-            <Text style={styles.demoText}>Email: {DEMO_USER.email}</Text>
-            <Text style={styles.demoText}>Password: {DEMO_USER.password}</Text>
-          </View>
+          {authMode === "signup" ? (
+            <TextInput
+              style={styles.input}
+              placeholder="Full name"
+              placeholderTextColor="#888"
+              value={authName}
+              onChangeText={setAuthName}
+            />
+          ) : null}
 
           <TextInput
             style={styles.input}
@@ -630,13 +777,35 @@ function MainApp() {
             secureTextEntry
           />
 
-          <TouchableOpacity style={styles.primaryButton} onPress={handleLogin}>
-            <Text style={styles.primaryButtonText}>Login</Text>
+          {authMode === "login" ? (
+            <TouchableOpacity style={styles.primaryButton} onPress={handleLogin}>
+              <Text style={styles.primaryButtonText}>Login</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity style={styles.primaryButton} onPress={handleSignup}>
+              <Text style={styles.primaryButtonText}>Create Account</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={() => setAuthMode(authMode === "login" ? "signup" : "login")}
+          >
+            <Text style={styles.secondaryButtonText}>
+              {authMode === "login"
+                ? "Need an account? Sign Up"
+                : "Already have an account? Login"}
+            </Text>
           </TouchableOpacity>
 
-          <Text style={styles.noteText}>
-            This is local demo login inside code. No real email creation and no Supabase email verification.
-          </Text>
+          <TouchableOpacity
+            onPress={() => {
+              setRedirectAfterAuth(null);
+              setScreen("home");
+            }}
+          >
+            <Text style={styles.linkText}>Continue Shopping</Text>
+          </TouchableOpacity>
         </ScrollView>
       </SafeAreaView>
     );
@@ -667,13 +836,15 @@ function MainApp() {
           <View style={styles.pagePad}>
             <Text style={styles.productCategory}>{selectedProduct.category}</Text>
             <Text style={styles.detailsTitle}>{selectedProduct.name}</Text>
-            <Text style={styles.price}>${Number(selectedProduct.price).toFixed(2)}</Text>
+            <Text style={styles.price}>${selectedProduct.price.toFixed(2)}</Text>
 
             {selectedProduct.old_price ? (
               <Text style={styles.oldPrice}>
-                Old price: ${Number(selectedProduct.old_price).toFixed(2)}
+                Old price: ${selectedProduct.old_price.toFixed(2)}
               </Text>
             ) : null}
+
+            <Text style={styles.subtle}>Stock: {selectedProduct.stock}</Text>
 
             <Text style={styles.sectionTitle}>Description</Text>
             <Text style={styles.description}>
@@ -682,7 +853,7 @@ function MainApp() {
 
             <Text style={styles.sectionTitle}>Choose color</Text>
             <View style={styles.rowWrap}>
-              {(selectedProduct.colors || []).map((color) => (
+              {selectedProduct.colors.map((color) => (
                 <TouchableOpacity
                   key={color}
                   style={[
@@ -705,7 +876,7 @@ function MainApp() {
 
             <Text style={styles.sectionTitle}>Choose size</Text>
             <View style={styles.rowWrap}>
-              {(selectedProduct.sizes || []).map((size) => (
+              {selectedProduct.sizes.map((size) => (
                 <TouchableOpacity
                   key={size}
                   style={[
@@ -746,7 +917,7 @@ function MainApp() {
             <Text style={styles.backText}>← Back</Text>
           </TouchableOpacity>
           <Text style={styles.screenTitle}>Cart</Text>
-          <View style={{ width: 50 }} />
+          <View style={{ width: 60 }} />
         </View>
 
         {cart.length === 0 ? (
@@ -797,10 +968,7 @@ function MainApp() {
 
             <View style={styles.footerBox}>
               <Text style={styles.totalText}>Total: ${cartTotal.toFixed(2)}</Text>
-              <TouchableOpacity
-                style={styles.primaryButton}
-                onPress={() => setScreen("checkout")}
-              >
+              <TouchableOpacity style={styles.primaryButton} onPress={goToCheckout}>
                 <Text style={styles.primaryButtonText}>Checkout</Text>
               </TouchableOpacity>
             </View>
@@ -819,8 +987,24 @@ function MainApp() {
               <Text style={styles.backText}>← Back</Text>
             </TouchableOpacity>
             <Text style={styles.screenTitle}>Checkout</Text>
-            <View style={{ width: 50 }} />
+            <View style={{ width: 60 }} />
           </View>
+
+          {!currentUser ? (
+            <View style={styles.authRequiredCard}>
+              <Text style={styles.sectionTitle}>Account required</Text>
+              <Text style={styles.description}>
+                Please create an account or log in with email to continue your
+                order.
+              </Text>
+              <TouchableOpacity
+                style={styles.primaryButton}
+                onPress={() => openAuth("checkout")}
+              >
+                <Text style={styles.primaryButtonText}>Login / Sign Up</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
 
           <TextInput
             style={styles.input}
@@ -871,11 +1055,13 @@ function MainApp() {
     return (
       <SafeAreaView style={styles.safe}>
         <View style={[styles.topBar, { paddingTop: insets.top + 6 }]}>
-          <TouchableOpacity onPress={() => setScreen("home")}>
+          <TouchableOpacity
+            onPress={() => setScreen(currentUser?.is_admin ? "admin" : "profile")}
+          >
             <Text style={styles.backText}>← Back</Text>
           </TouchableOpacity>
           <Text style={styles.screenTitle}>My Orders</Text>
-          <View style={{ width: 50 }} />
+          <View style={{ width: 60 }} />
         </View>
 
         <ScrollView style={styles.pagePad}>
@@ -886,7 +1072,7 @@ function MainApp() {
               <View key={order.id} style={styles.card}>
                 <Text style={styles.orderTitle}>Order #{order.id.slice(0, 8)}</Text>
                 <Text style={styles.subtle}>Status: {order.status}</Text>
-                <Text style={styles.subtle}>Total: ${Number(order.total).toFixed(2)}</Text>
+                <Text style={styles.subtle}>Total: ${order.total.toFixed(2)}</Text>
                 <Text style={styles.subtle}>
                   Date: {new Date(order.created_at).toLocaleString()}
                 </Text>
@@ -894,7 +1080,8 @@ function MainApp() {
                 <View style={{ marginTop: 10 }}>
                   {order.order_items?.map((item) => (
                     <Text key={item.id} style={styles.orderItem}>
-                      • {item.product_name} x{item.quantity} | {item.selected_color} | {item.selected_size}
+                      • {item.product_name} x{item.quantity} | {item.selected_color} |{" "}
+                      {item.selected_size}
                     </Text>
                   ))}
                 </View>
@@ -906,7 +1093,125 @@ function MainApp() {
     );
   }
 
+  if (screen === "profile") {
+    const totalMySpent = myOrders.reduce((sum, order) => sum + order.total, 0);
+
+    return (
+      <SafeAreaView style={styles.safe}>
+        <ScrollView
+          style={styles.pagePad}
+          contentContainerStyle={{ paddingTop: insets.top + 8, paddingBottom: 30 }}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.adminHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.screenTitle}>My Account</Text>
+              <Text style={styles.subtle}>
+                {currentUser ? "Your profile and orders" : "Login to manage account"}
+              </Text>
+            </View>
+
+            <TouchableOpacity onPress={() => setScreen("home")}>
+              <Text style={styles.backText}>Home</Text>
+            </TouchableOpacity>
+          </View>
+
+          {!currentUser ? (
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>You are not logged in</Text>
+              <Text style={styles.description}>
+                Login or create an account to see your profile and orders.
+              </Text>
+              <TouchableOpacity
+                style={styles.primaryButton}
+                onPress={() => openAuth("profile")}
+              >
+                <Text style={styles.primaryButtonText}>Login / Sign Up</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              <View style={styles.card}>
+                <Text style={styles.sectionTitle}>Profile info</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Full name"
+                  placeholderTextColor="#888"
+                  value={currentUser.full_name}
+                  onChangeText={(text) =>
+                    setCurrentUser((prev) => (prev ? { ...prev, full_name: text } : prev))
+                  }
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Email"
+                  placeholderTextColor="#888"
+                  value={currentUser.email}
+                  editable={false}
+                />
+
+                <TouchableOpacity
+                  style={styles.primaryButton}
+                  onPress={() => updateProfileName(currentUser.full_name)}
+                >
+                  <Text style={styles.primaryButtonText}>Save Profile</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.secondaryButton}
+                  onPress={() => setScreen("orders")}
+                >
+                  <Text style={styles.secondaryButtonText}>View My Orders</Text>
+                </TouchableOpacity>
+
+                {currentUser.is_admin ? (
+                  <TouchableOpacity
+                    style={styles.secondaryDarkButton}
+                    onPress={() => setScreen("admin")}
+                  >
+                    <Text style={styles.secondaryDarkButtonText}>Open Admin Panel</Text>
+                  </TouchableOpacity>
+                ) : null}
+
+                <TouchableOpacity style={styles.logoutBtnWide} onPress={logout}>
+                  <Text style={styles.logoutBtnText}>Logout</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.statsRow}>
+                <View style={styles.statCard}>
+                  <Text style={styles.statValue}>{myOrders.length}</Text>
+                  <Text style={styles.statLabel}>My Orders</Text>
+                </View>
+                <View style={styles.statCard}>
+                  <Text style={styles.statValue}>${totalMySpent.toFixed(0)}</Text>
+                  <Text style={styles.statLabel}>Total Spent</Text>
+                </View>
+              </View>
+            </>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
   if (screen === "admin") {
+    if (!currentUser?.is_admin) {
+      return (
+        <SafeAreaView style={styles.safe}>
+          <View style={styles.centered}>
+            <Text style={styles.emptyTitle}>Admin access only</Text>
+            <TouchableOpacity
+              style={styles.primaryButton}
+              onPress={() => setScreen("home")}
+            >
+              <Text style={styles.primaryButtonText}>Back Home</Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
+      );
+    }
+
     return (
       <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
         <ScrollView
@@ -917,16 +1222,13 @@ function MainApp() {
           <View style={styles.adminHeader}>
             <View style={{ flex: 1 }}>
               <Text style={styles.screenTitle}>Admin Panel</Text>
-              <Text style={styles.subtle}>Manage HypeNest store</Text>
+              <Text style={styles.subtle}>Manage store, users and all orders</Text>
             </View>
 
             <TouchableOpacity style={styles.logoutBtn} onPress={logout}>
               <Text style={styles.logoutBtnText}>Logout</Text>
             </TouchableOpacity>
           </View>
-
-          <Text style={styles.logo}>HypeNest Admin</Text>
-          <Text style={styles.subtle}>Products, orders and users</Text>
 
           <ScrollView
             horizontal
@@ -968,21 +1270,32 @@ function MainApp() {
                   <Text style={styles.statLabel}>Products</Text>
                 </View>
                 <View style={styles.statCard}>
-                  <Text style={styles.statValue}>{adminOrders.length}</Text>
+                  <Text style={styles.statValue}>{orders.length}</Text>
                   <Text style={styles.statLabel}>Orders</Text>
                 </View>
               </View>
 
               <View style={styles.statsRow}>
                 <View style={styles.statCard}>
-                  <Text style={styles.statValue}>{adminUsers.length}</Text>
+                  <Text style={styles.statValue}>{users.length}</Text>
                   <Text style={styles.statLabel}>Users</Text>
                 </View>
                 <View style={styles.statCard}>
                   <Text style={styles.statValue}>
-                    {adminUsers.filter((u) => u.is_admin).length}
+                    {users.filter((u) => u.is_admin).length}
                   </Text>
                   <Text style={styles.statLabel}>Admins</Text>
+                </View>
+              </View>
+
+              <View style={styles.statsRow}>
+                <View style={styles.statCard}>
+                  <Text style={styles.statValue}>${totalRevenue.toFixed(0)}</Text>
+                  <Text style={styles.statLabel}>Revenue</Text>
+                </View>
+                <View style={styles.statCard}>
+                  <Text style={styles.statValue}>{pendingOrdersCount}</Text>
+                  <Text style={styles.statLabel}>Pending</Text>
                 </View>
               </View>
             </>
@@ -1089,9 +1402,7 @@ function MainApp() {
               </View>
 
               <View style={styles.card}>
-                <View style={styles.topBarInsideCard}>
-                  <Text style={styles.sectionTitle}>Products</Text>
-                </View>
+                <Text style={styles.sectionTitle}>Products</Text>
 
                 {products.map((product) => (
                   <View key={product.id} style={styles.adminItem}>
@@ -1099,7 +1410,7 @@ function MainApp() {
                       <Text style={styles.cartName}>{product.name}</Text>
                       <Text style={styles.subtle}>{product.category}</Text>
                       <Text style={styles.subtle}>
-                        ${Number(product.price).toFixed(2)}
+                        ${product.price.toFixed(2)}
                       </Text>
                       <Text style={styles.subtle}>Stock: {product.stock}</Text>
                     </View>
@@ -1127,9 +1438,7 @@ function MainApp() {
 
           {adminTab === "orders" && (
             <View style={styles.card}>
-              <View style={styles.topBarInsideCard}>
-                <Text style={styles.sectionTitle}>All Orders</Text>
-              </View>
+              <Text style={styles.sectionTitle}>All Orders</Text>
 
               <TextInput
                 style={styles.input}
@@ -1144,25 +1453,28 @@ function MainApp() {
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.filterTabsWrap}
               >
-                {["All", "Pending", "Accepted", "Delivered"].map((status) => (
-                  <TouchableOpacity
-                    key={status}
-                    style={[
-                      styles.filterChip,
-                      orderStatusFilter === status && styles.filterChipActive,
-                    ]}
-                    onPress={() => setOrderStatusFilter(status)}
-                  >
-                    <Text
+                {["All", "Pending", "Accepted", "Delivered", "Cancelled"].map(
+                  (status) => (
+                    <TouchableOpacity
+                      key={status}
                       style={[
-                        styles.filterChipText,
-                        orderStatusFilter === status && styles.filterChipTextActive,
+                        styles.filterChip,
+                        orderStatusFilter === status && styles.filterChipActive,
                       ]}
+                      onPress={() => setOrderStatusFilter(status)}
                     >
-                      {status}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+                      <Text
+                        style={[
+                          styles.filterChipText,
+                          orderStatusFilter === status &&
+                            styles.filterChipTextActive,
+                        ]}
+                      >
+                        {status}
+                      </Text>
+                    </TouchableOpacity>
+                  )
+                )}
               </ScrollView>
 
               {filteredAdminOrders.length === 0 ? (
@@ -1180,7 +1492,7 @@ function MainApp() {
                     <Text style={styles.subtle}>City: {order.city || "-"}</Text>
                     <Text style={styles.subtle}>Address: {order.address || "-"}</Text>
                     <Text style={styles.subtle}>
-                      Total: ${Number(order.total).toFixed(2)}
+                      Total: ${order.total.toFixed(2)}
                     </Text>
                     <Text style={styles.subtle}>
                       Date: {new Date(order.created_at).toLocaleString()}
@@ -1189,32 +1501,24 @@ function MainApp() {
                     <View style={{ marginTop: 10 }}>
                       {order.order_items?.map((item) => (
                         <Text key={item.id} style={styles.orderItem}>
-                          • {item.product_name} x{item.quantity} | {item.selected_color} | {item.selected_size}
+                          • {item.product_name} x{item.quantity} | {item.selected_color} |{" "}
+                          {item.selected_size}
                         </Text>
                       ))}
                     </View>
 
                     <View style={styles.statusRow}>
-                      <TouchableOpacity
-                        style={styles.statusBtn}
-                        onPress={() => updateOrderStatus(order.id, "Pending")}
-                      >
-                        <Text style={styles.statusBtnText}>Pending</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.statusBtn}
-                        onPress={() => updateOrderStatus(order.id, "Accepted")}
-                      >
-                        <Text style={styles.statusBtnText}>Accepted</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.statusBtn}
-                        onPress={() => updateOrderStatus(order.id, "Delivered")}
-                      >
-                        <Text style={styles.statusBtnText}>Delivered</Text>
-                      </TouchableOpacity>
+                      {["Pending", "Accepted", "Delivered", "Cancelled"].map(
+                        (status) => (
+                          <TouchableOpacity
+                            key={status}
+                            style={styles.statusBtn}
+                            onPress={() => updateOrderStatus(order.id, status)}
+                          >
+                            <Text style={styles.statusBtnText}>{status}</Text>
+                          </TouchableOpacity>
+                        )
+                      )}
                     </View>
                   </View>
                 ))
@@ -1224,9 +1528,7 @@ function MainApp() {
 
           {adminTab === "users" && (
             <View style={styles.card}>
-              <View style={styles.topBarInsideCard}>
-                <Text style={styles.sectionTitle}>Users</Text>
-              </View>
+              <Text style={styles.sectionTitle}>Users</Text>
 
               <TextInput
                 style={styles.input}
@@ -1236,40 +1538,47 @@ function MainApp() {
                 onChangeText={setUserSearch}
               />
 
-              {filteredAdminUsers.length === 0 ? (
+              {filteredUsers.length === 0 ? (
                 <Text style={styles.subtle}>No users found.</Text>
               ) : (
-                filteredAdminUsers.map((user) => (
-                  <View key={user.id} style={styles.userCard}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.cartName}>
-                        {user.full_name || "No Name"}
-                      </Text>
-                      <Text style={styles.subtle}>{user.email || "No Email"}</Text>
-                      <Text style={styles.subtle}>
-                        Role: {user.is_admin ? "Admin" : "User"}
-                      </Text>
-                    </View>
+                filteredUsers.map((user) => {
+                  const userOrderCount = orders.filter(
+                    (order) => order.user_id === user.id
+                  ).length;
 
-                    <View style={styles.userActions}>
-                      {user.is_admin ? (
-                        <TouchableOpacity
-                          style={styles.removeAdminBtn}
-                          onPress={() => setUserAdmin(user.id, false)}
-                        >
-                          <Text style={styles.removeAdminBtnText}>Remove Admin</Text>
-                        </TouchableOpacity>
-                      ) : (
-                        <TouchableOpacity
-                          style={styles.makeAdminBtn}
-                          onPress={() => setUserAdmin(user.id, true)}
-                        >
-                          <Text style={styles.makeAdminBtnText}>Make Admin</Text>
-                        </TouchableOpacity>
-                      )}
+                  return (
+                    <View key={user.id} style={styles.userCard}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.cartName}>{user.full_name}</Text>
+                        <Text style={styles.subtle}>{user.email}</Text>
+                        <Text style={styles.subtle}>
+                          Role: {user.is_admin ? "Admin" : "User"}
+                        </Text>
+                        <Text style={styles.subtle}>Orders: {userOrderCount}</Text>
+                      </View>
+
+                      <View style={styles.userActions}>
+                        {user.is_admin ? (
+                          <TouchableOpacity
+                            style={styles.removeAdminBtn}
+                            onPress={() => setUserAdmin(user.id, false)}
+                          >
+                            <Text style={styles.removeAdminBtnText}>
+                              Remove Admin
+                            </Text>
+                          </TouchableOpacity>
+                        ) : (
+                          <TouchableOpacity
+                            style={styles.makeAdminBtn}
+                            onPress={() => setUserAdmin(user.id, true)}
+                          >
+                            <Text style={styles.makeAdminBtnText}>Make Admin</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
                     </View>
-                  </View>
-                ))
+                  );
+                })
               )}
             </View>
           )}
@@ -1283,28 +1592,55 @@ function MainApp() {
       <StatusBar barStyle="dark-content" />
       <View style={[styles.topBar, { paddingTop: insets.top + 6 }]}>
         <Text style={styles.logo}>HypeNest</Text>
-        <TouchableOpacity onPress={logout}>
-          <Text style={styles.backText}>Logout</Text>
-        </TouchableOpacity>
+        <View style={styles.headerRightActions}>
+          <TouchableOpacity onPress={() => setScreen("cart")}>
+            <Text style={styles.backText}>Cart ({cart.length})</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => {
+              if (currentUser?.is_admin) {
+                setScreen("admin");
+              } else {
+                setScreen("profile");
+              }
+            }}
+          >
+            <Text style={styles.backText}>
+              {currentUser ? "Account" : "Login"}
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.homeHeader}>
-        <Text style={styles.subtle}>Hello {profile?.full_name || sessionEmail}</Text>
+        <Text style={styles.subtle}>
+          {currentUser
+            ? `Hello ${currentUser.full_name}`
+            : "Welcome to HypeNest"}
+        </Text>
 
         <View style={styles.homeActions}>
           <TouchableOpacity
             style={styles.smallActionBtn}
-            onPress={() => setScreen("orders")}
+            onPress={() => setScreen("profile")}
           >
-            <Text style={styles.smallActionBtnText}>My Orders</Text>
+            <Text style={styles.smallActionBtnText}>
+              {currentUser ? "My Profile" : "Login / Sign Up"}
+            </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.smallActionBtn}
-            onPress={() => setScreen("cart")}
-          >
-            <Text style={styles.smallActionBtnText}>Cart ({cart.length})</Text>
-          </TouchableOpacity>
+          {currentUser?.is_admin ? (
+            <TouchableOpacity style={styles.smallActionBtn} onPress={goToAdmin}>
+              <Text style={styles.smallActionBtnText}>Admin Panel</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.smallActionBtn}
+              onPress={() => setScreen("orders")}
+            >
+              <Text style={styles.smallActionBtnText}>My Orders</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -1367,7 +1703,13 @@ function MainApp() {
             <Text style={styles.productName} numberOfLines={2}>
               {item.name}
             </Text>
-            <Text style={styles.price}>${Number(item.price).toFixed(2)}</Text>
+            <Text style={styles.price}>${item.price.toFixed(2)}</Text>
+            {item.old_price ? (
+              <Text style={styles.cardOldPrice}>${item.old_price.toFixed(2)}</Text>
+            ) : null}
+            <Text style={styles.stockText}>
+              {item.stock > 0 ? `Stock: ${item.stock}` : "Out of stock"}
+            </Text>
           </TouchableOpacity>
         )}
       />
@@ -1412,12 +1754,6 @@ const styles = StyleSheet.create({
   subtle: {
     color: "#666",
     fontSize: 14,
-  },
-  noteText: {
-    color: "#666",
-    fontSize: 13,
-    textAlign: "center",
-    marginTop: 18,
   },
   demoBox: {
     backgroundColor: "#fff",
@@ -1475,6 +1811,19 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 15,
   },
+  secondaryDarkButton: {
+    backgroundColor: "#222",
+    borderRadius: 14,
+    paddingVertical: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 12,
+  },
+  secondaryDarkButtonText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 15,
+  },
   linkText: {
     textAlign: "center",
     color: "#111",
@@ -1505,6 +1854,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 10,
     marginTop: 12,
+  },
+  headerRightActions: {
+    flexDirection: "row",
+    gap: 16,
+    alignItems: "center",
   },
   smallActionBtn: {
     backgroundColor: "#111",
@@ -1546,6 +1900,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     overflow: "hidden",
     marginBottom: 14,
+    paddingBottom: 8,
   },
   productImage: {
     width: "100%",
@@ -1573,6 +1928,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
+  cardOldPrice: {
+    color: "#888",
+    fontSize: 12,
+    textDecorationLine: "line-through",
+    paddingHorizontal: 12,
+    marginTop: -6,
+  },
+  stockText: {
+    color: "#666",
+    fontSize: 12,
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+  },
   detailsImage: {
     width: "100%",
     height: 370,
@@ -1587,6 +1955,7 @@ const styles = StyleSheet.create({
     color: "#888",
     fontSize: 14,
     marginTop: 4,
+    paddingHorizontal: 12,
   },
   sectionTitle: {
     color: "#111",
@@ -1681,12 +2050,22 @@ const styles = StyleSheet.create({
     color: "#111",
     fontWeight: "900",
     fontSize: 20,
+    textAlign: "center",
   },
   card: {
     backgroundColor: "#fff",
     borderRadius: 16,
     padding: 14,
     marginBottom: 14,
+  },
+  authRequiredCard: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 14,
+    marginTop: 8,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: "#e8e8e8",
   },
   orderTitle: {
     color: "#111",
@@ -1766,16 +2145,19 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignSelf: "flex-start",
   },
+  logoutBtnWide: {
+    backgroundColor: "#c62828",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignSelf: "stretch",
+    marginTop: 12,
+    alignItems: "center",
+  },
   logoutBtnText: {
     color: "#fff",
     fontWeight: "800",
     fontSize: 14,
-  },
-  topBarInsideCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 12,
   },
   adminTabsWrap: {
     paddingBottom: 12,
